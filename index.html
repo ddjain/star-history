@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GitHub repo stargazers</title>
+  <link rel="stylesheet" href="css/main.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1"></script>
+</head>
+<body>
+  <header class="page-header">
+    <div>
+      <h1>GitHub repo stargazers</h1>
+      <p class="page-subtitle">View stargazer history for any GitHub repo.</p>
+    </div>
+    <button type="button" id="themeToggle" class="theme-toggle" aria-label="Toggle theme">Dark</button>
+  </header>
+  <div class="repo-row">
+    <input type="text" id="repoInput" placeholder="owner/repo" />
+    <button type="button" id="loadBtn">Load</button>
+  </div>
+  <div id="loadedRepo" class="loaded-repo" style="display: none;"></div>
+  <div id="cacheMessage" class="cache-message" style="display: none;">
+    <span id="cacheMessageText"></span>
+    <button type="button" id="clearCacheBtn" class="cache-clear-btn">Clear cache and refresh</button>
+  </div>
+  <div id="rateLimit" class="rate-limit">
+    <p class="rate-limit-message"></p>
+    <p class="rate-limit-note">We never store this token on any server. It is stored only on your device (client-side). This is a simple static app that runs entirely in your browser.</p>
+    <label for="rateLimitToken">GitHub token (optional):</label>
+    <input type="password" id="rateLimitToken" placeholder="Personal Access Token" autocomplete="off" />
+    <div class="rate-limit-actions">
+      <button type="button" id="saveTokenSessionBtn">Use for this session only</button>
+      <button type="button" id="saveTokenStorageBtn">Save to this device</button>
+      <button type="button" id="clearTokenBtn">Clear token</button>
+    </div>
+    <span class="token-saved-feedback" id="tokenSavedFeedback" aria-live="polite"></span>
+  </div>
+  <div class="controls">
+    <label>View:</label>
+    <div class="view-segmented" role="group" aria-label="Time range">
+      <button type="button" data-view="day" class="active">Daily</button>
+      <button type="button" data-view="month">Monthly</button>
+      <button type="button" data-view="year">Yearly</button>
+    </div>
+    <label>Chart type:</label>
+    <div class="chart-type-segmented" role="group" aria-label="Chart type">
+      <button type="button" data-chart-type="line" class="active">Line</button>
+      <button type="button" data-chart-type="area">Area</button>
+      <button type="button" data-chart-type="bar">Bar</button>
+    </div>
+  </div>
+  <div class="main-content">
+    <div class="chart-wrapper">
+      <div class="chart-zoom-actions">
+        <button type="button" id="resetZoomBtn" class="reset-zoom-btn" style="display: none;">Reset zoom</button>
+      </div>
+      <div class="chart-container">
+        <div id="loading" class="loading">
+          <div class="spinner"></div>
+          <span id="loadingText">Enter a repo and click Load.</span>
+        </div>
+        <div id="chartSkeleton" class="chart-skeleton" style="display: none;">
+          <div class="skeleton-line"></div>
+          <div class="skeleton-line"></div>
+          <div class="skeleton-line"></div>
+          <div class="skeleton-line"></div>
+          <div class="skeleton-line"></div>
+        </div>
+        <canvas id="chart" style="display: none;"></canvas>
+      </div>
+    </div>
+    <aside id="sidebar" class="sidebar empty">
+      <div class="sidebar-placeholder">Click a bar or point on the chart to see who starred.</div>
+      <div class="sidebar-body">
+        <div class="sidebar-header">
+          <span id="sidebarTitle" class="sidebar-title"></span>
+          <button type="button" id="sidebarClose" class="sidebar-close" aria-label="Close">&times;</button>
+        </div>
+        <ul id="sidebarList" class="sidebar-list"></ul>
+      </div>
+    </aside>
+  </div>
+  <div id="tooltip"></div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

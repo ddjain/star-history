@@ -5,9 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>GitHub repo stargazers</title>
   <link rel="stylesheet" href="css/main.css">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1"></script>
 </head>
 <body>
   <header class="page-header">
@@ -18,16 +15,28 @@
     <button type="button" id="themeToggle" class="theme-toggle" aria-label="Toggle theme">Dark</button>
   </header>
   <div class="repo-row">
-    <input type="text" id="repoInput" placeholder="owner/repo" />
+    <input type="text" id="repoInput" placeholder="owner/repo" list="repoSuggestions" />
+    <datalist id="repoSuggestions"></datalist>
     <button type="button" id="loadBtn">Load</button>
   </div>
+  <label class="cache-only-label">
+    <input type="checkbox" id="useCacheOnly" /> Use cache only
+  </label>
+  <p id="apiCallCount" class="api-call-count" aria-live="polite">API calls: — / —</p>
+  <div class="repo-actions">
+    <button type="button" id="copyLinkBtn" class="copy-link-btn">Copy link</button>
+    <button type="button" id="clearRecentReposBtn" class="clear-recent-btn">Clear recent repos</button>
+  </div>
+  <p id="exampleRepos" class="example-repos">Try: <button type="button" class="example-repo-chip" data-repo="facebook/react">facebook/react</button>, <button type="button" class="example-repo-chip" data-repo="microsoft/vscode">microsoft/vscode</button></p>
   <div id="loadedRepo" class="loaded-repo" style="display: none;"></div>
   <div id="cacheMessage" class="cache-message" style="display: none;">
     <span id="cacheMessageText"></span>
+    <button type="button" id="cacheRefreshBtn" class="cache-refresh-btn" style="display: none;">Refresh</button>
     <button type="button" id="clearCacheBtn" class="cache-clear-btn">Clear cache and refresh</button>
   </div>
   <div id="rateLimit" class="rate-limit">
     <p class="rate-limit-message"></p>
+    <button type="button" id="rateLimitRetryBtn" class="rate-limit-retry-btn">Retry</button>
     <p class="rate-limit-note">We never store this token on any server. It is stored only on your device (client-side). This is a simple static app that runs entirely in your browser.</p>
     <label for="rateLimitToken">GitHub token (optional):</label>
     <input type="password" id="rateLimitToken" placeholder="Personal Access Token" autocomplete="off" />
@@ -69,10 +78,11 @@
           <div class="skeleton-line"></div>
           <div class="skeleton-line"></div>
         </div>
-        <canvas id="chart" style="display: none;"></canvas>
+        <canvas id="chart" style="display: none;" aria-label="Stargazer history chart showing number of stars over time. Select a point or bar to see who starred."></canvas>
       </div>
     </div>
     <aside id="sidebar" class="sidebar empty">
+      <div class="sidebar-backdrop" id="sidebarBackdrop" aria-hidden="true"></div>
       <div class="sidebar-placeholder">Click a bar or point on the chart to see who starred.</div>
       <div class="sidebar-body">
         <div class="sidebar-header">

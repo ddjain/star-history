@@ -2,7 +2,8 @@ import { getStargazersUrl } from './config.js';
 import { fetchAllStargazers } from './api/github.js';
 import { aggregate, getChartData } from './data/aggregator.js';
 import { getRepoFromUrl, setRepoInUrl, parseRepoInput } from './utils/url.js';
-import { getCachedStargazers, setCachedStargazers, clearCachedStargazers } from './utils/cache.js';
+import { getCachedStargazers, setCachedStargazers, clearCachedStargazers, isCacheStale, trimStargazersList } from './utils/cache.js';
+import { getRecentRepos, addRecentRepo, clearRecentRepos } from './utils/recentRepos.js';
 import { getToken, setToken, clearToken } from './utils/token.js';
 import { getChartTheme } from './utils/theme.js';
 import * as rateLimit from './components/rateLimit.js';
@@ -16,6 +17,7 @@ let aggregated = { day: new Map(), month: new Map(), year: new Map() };
 let chartInstance = null;
 let currentRepo = '';
 let currentChartType = 'line';
+let loadAbortController = null;
 
 const loadingEl = document.getElementById('loading');
 const loadingTextEl = document.getElementById('loadingText');
@@ -32,6 +34,7 @@ const sidebarListEl = document.getElementById('sidebarList');
 const sidebarCloseBtn = document.getElementById('sidebarClose');
 const cacheMessageEl = document.getElementById('cacheMessage');
 const cacheMessageTextEl = document.getElementById('cacheMessageText');
+const cacheRefreshBtn = document.getElementById('cacheRefreshBtn');
 const clearCacheBtn = document.getElementById('clearCacheBtn');
 const chartSkeletonEl = document.getElementById('chartSkeleton');
 const themeToggleEl = document.getElementById('themeToggle');
@@ -41,7 +44,87 @@ const rateLimitTokenInput = document.getElementById('rateLimitToken');
 const saveTokenSessionBtn = document.getElementById('saveTokenSessionBtn');
 const saveTokenStorageBtn = document.getElementById('saveTokenStorageBtn');
 const clearTokenBtn = document.getElementById('clearTokenBtn');
+const rateLimitRetryBtn = document.getElementById('rateLimitRetryBtn');
 const tokenSavedFeedback = document.getElementById('tokenSavedFeedback');
+const apiCallCountEl = document.getElementById('apiCallCount');
+const repoSuggestionsEl = document.getElementById('repoSuggestions');
+const useCacheOnlyCheckbox = document.getElementById('useCacheOnly');
+const copyLinkBtn = document.getElementById('copyLinkBtn');
+const clearRecentReposBtn = document.getElementById('clearRecentReposBtn');
+const exampleReposEl = document.getElementById('exampleRepos');
+
+const RATE_LIMIT_STORAGE_KEY = 'stargrap_rate_limit_info';
+
+let chartScriptsLoaded = null;
+function loadChartScripts() {
+  if (typeof window.Chart !== 'undefined') return Promise.resolve();
+  if (chartScriptsLoaded) return chartScriptsLoaded;
+  const urls = [
+    'https://cdn.jsdelivr.net/npm/chart.js',
+    'https://cdn.jsdelivr.net/npm/hammerjs@2.0.8',
+    'https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1'
+  ];
+  chartScriptsLoaded = urls.reduce((p, url) => p.then(() => new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = url;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error('Failed to load chart script: ' + url));
+    document.head.appendChild(s);
+  })), Promise.resolve());
+  return chartScriptsLoaded;
+}
+
+function refreshRepoSuggestions() {
+  if (!repoSuggestionsEl) return;
+  repoSuggestionsEl.innerHTML = '';
+  getRecentRepos().forEach((repo) => {
+    const opt = document.createElement('option');
+    opt.value = repo;
+    repoSuggestionsEl.appendChild(opt);
+  });
+}
+
+function getStoredRateLimitInfo() {
+  try {
+    const raw = localStorage.getItem(RATE_LIMIT_STORAGE_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (data && typeof data.used === 'number' && typeof data.limit === 'number') return data;
+    return null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function setStoredRateLimitInfo(used, limit) {
+  try {
+    localStorage.setItem(RATE_LIMIT_STORAGE_KEY, JSON.stringify({
+      used,
+      limit,
+      recordedAt: new Date().toISOString()
+    }));
+  } catch (_) {}
+}
+
+function updateApiCallCountDisplay(used, limit, recordedAt) {
+  if (!apiCallCountEl) return;
+  if (used != null && limit != null) {
+    const timeStr = recordedAt ? new Date(recordedAt).toLocaleString() : '';
+    apiCallCountEl.textContent = timeStr
+      ? `API calls: ${used} / ${limit}. Last recorded at ${timeStr}.`
+      : `API calls: ${used} / ${limit}`;
+  } else {
+    const stored = getStoredRateLimitInfo();
+    if (stored) {
+      const timeStr = stored.recordedAt ? new Date(stored.recordedAt).toLocaleString() : '';
+      apiCallCountEl.textContent = timeStr
+        ? `API calls: ${stored.used} / ${stored.limit}. Last recorded at ${timeStr}.`
+        : `API calls: ${stored.used} / ${stored.limit}`;
+    } else {
+      apiCallCountEl.textContent = 'API calls: — / —';
+    }
+  }
+}
 
 function getChartType() {
   const active = document.querySelector('.chart-type-segmented button.active');
@@ -73,7 +156,8 @@ function hideLoadingState() {
   chartSkeletonEl.style.display = 'none';
 }
 
-function renderChart() {
+async function renderChart() {
+  await loadChartScripts();
   const granularity = getGranularity();
   const chartData = getChartData(aggregated, granularity, {});
   const theme = getChartTheme();
@@ -86,6 +170,9 @@ function renderChart() {
   if (resetZoomBtn) resetZoomBtn.style.display = 'none';
 
   chartEl.style.display = 'block';
+  chartEl.setAttribute('aria-label', currentRepo
+    ? `Stargazer history for ${currentRepo}. Number of stars over time. Select a point or bar to see who starred.`
+    : 'Stargazer history chart showing number of stars over time. Select a point or bar to see who starred.');
   loadingEl.style.display = 'none';
 
   if (chartData.labels.length === 0) {
@@ -122,6 +209,7 @@ async function loadRepo(skipCache = false) {
     loadedRepoEl.style.display = 'none';
     cacheMessageEl.style.display = 'none';
     rateLimit.hide(rateLimitEl);
+    if (exampleReposEl) exampleReposEl.style.display = 'block';
     if (!chartInstance) loadingTextEl.textContent = 'Enter owner/repo (e.g. krkn-chaos/krkn) and click Load.';
     return;
   }
@@ -136,15 +224,31 @@ async function loadRepo(skipCache = false) {
   sidebar.close(sidebarEl, sidebarTitleEl, sidebarListEl);
 
   const cached = !skipCache && getCachedStargazers(repo);
+  if (useCacheOnlyCheckbox && useCacheOnlyCheckbox.checked && (!cached || cached.data.length === 0)) {
+    cacheMessageTextEl.textContent = 'Not in cache. Uncheck to fetch from GitHub.';
+    if (cacheRefreshBtn) cacheRefreshBtn.style.display = 'none';
+    cacheMessageEl.style.display = 'flex';
+    loadingTextEl.textContent = 'Not in cache. Uncheck "Use cache only" to fetch from GitHub.';
+    if (exampleReposEl) exampleReposEl.style.display = 'block';
+    return;
+  }
   if (cached && cached.data.length > 0) {
     allStargazers = cached.data;
     aggregated = aggregate(allStargazers);
-    renderChart();
+    await renderChart();
+    if (exampleReposEl) exampleReposEl.style.display = 'none';
     const dateStr = cached.fetchedAt ? new Date(cached.fetchedAt).toLocaleString() : 'unknown';
-    cacheMessageTextEl.textContent = `Using cache from ${dateStr}.`;
+    const stale = isCacheStale(cached);
+    cacheMessageTextEl.textContent = `Using cache from ${dateStr}.${stale ? ' (may be outdated)' : ''}`;
+    if (cacheRefreshBtn) cacheRefreshBtn.style.display = stale ? 'inline-block' : 'none';
     cacheMessageEl.style.display = 'flex';
+    addRecentRepo(repo);
+    refreshRepoSuggestions();
     return;
   }
+
+  if (loadAbortController) loadAbortController.abort();
+  loadAbortController = new AbortController();
 
   setControlsDisabled(true);
   showLoadingState(true);
@@ -158,7 +262,12 @@ async function loadRepo(skipCache = false) {
       onRateLimit(reset) {
         rateLimit.show(rateLimitEl, reset);
       },
-      token: getToken()
+      onRateLimitInfo(used, limit) {
+        setStoredRateLimitInfo(used, limit);
+        updateApiCallCountDisplay(used, limit, new Date().toISOString());
+      },
+      token: getToken(),
+      signal: loadAbortController.signal
     });
 
     hideLoadingState();
@@ -172,16 +281,23 @@ async function loadRepo(skipCache = false) {
       return;
     }
 
+    allStargazers = trimStargazersList(allStargazers);
     setCachedStargazers(repo, allStargazers);
     aggregated = aggregate(allStargazers);
-    renderChart();
+    await renderChart();
+    if (exampleReposEl) exampleReposEl.style.display = 'none';
     const dateStr = new Date().toLocaleString();
     cacheMessageTextEl.textContent = `Using cache from ${dateStr}.`;
+    if (cacheRefreshBtn) cacheRefreshBtn.style.display = 'none';
     cacheMessageEl.style.display = 'flex';
+    addRecentRepo(repo);
+    refreshRepoSuggestions();
   } catch (err) {
     hideLoadingState();
     setControlsDisabled(false);
+    if (err.name === 'AbortError') return;
     loadingTextEl.textContent = err.message || 'Failed to load data.';
+    if (exampleReposEl) exampleReposEl.style.display = 'block';
     if (tokenSavedFeedback) {
       tokenSavedFeedback.textContent = '';
       tokenSavedFeedback.style.display = 'none';
@@ -203,10 +319,47 @@ loadBtn.addEventListener('click', () => loadRepo());
 repoInput.addEventListener('keydown', function(e) {
   if (e.key === 'Enter') loadRepo();
 });
+if (cacheRefreshBtn) {
+  cacheRefreshBtn.addEventListener('click', function() {
+    loadRepo(true);
+  });
+}
 clearCacheBtn.addEventListener('click', function() {
   if (currentRepo) {
     clearCachedStargazers(currentRepo);
+    repoInput.value = currentRepo;
     loadRepo(true);
+  }
+});
+
+if (copyLinkBtn) {
+  copyLinkBtn.addEventListener('click', function() {
+    try {
+      navigator.clipboard.writeText(window.location.href);
+      copyLinkBtn.textContent = 'Copied!';
+      setTimeout(function() { copyLinkBtn.textContent = 'Copy link'; }, 2000);
+    } catch (_) {}
+  });
+}
+if (clearRecentReposBtn) {
+  clearRecentReposBtn.addEventListener('click', function() {
+    clearRecentRepos();
+    refreshRepoSuggestions();
+  });
+}
+document.querySelectorAll('.example-repo-chip').forEach(function(btn) {
+  btn.addEventListener('click', function() {
+    const repo = btn.getAttribute('data-repo');
+    if (repo && repoInput) {
+      repoInput.value = repo;
+      loadRepo();
+    }
+  });
+});
+
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape' && sidebarEl && !sidebarEl.classList.contains('empty')) {
+    sidebar.close(sidebarEl, sidebarTitleEl, sidebarListEl);
   }
 });
 
@@ -228,6 +381,11 @@ if (saveTokenSessionBtn) saveTokenSessionBtn.addEventListener('click', () => han
 if (saveTokenStorageBtn) saveTokenStorageBtn.addEventListener('click', () => handleSaveToken(true));
 
 if (clearTokenBtn && rateLimitTokenInput && tokenSavedFeedback) {
+  if (rateLimitRetryBtn) {
+    rateLimitRetryBtn.addEventListener('click', function() {
+      loadRepo();
+    });
+  }
   clearTokenBtn.addEventListener('click', function() {
     clearToken();
     rateLimitTokenInput.value = '';
@@ -239,21 +397,21 @@ if (clearTokenBtn && rateLimitTokenInput && tokenSavedFeedback) {
 }
 
 viewButtons.forEach((btn) => {
-  btn.addEventListener('click', function() {
+  btn.addEventListener('click', async function() {
     viewButtons.forEach((b) => b.classList.remove('active'));
     btn.classList.add('active');
     sidebar.close(sidebarEl, sidebarTitleEl, sidebarListEl);
-    renderChart();
+    await renderChart();
   });
 });
 
 chartTypeButtons.forEach((btn) => {
-  btn.addEventListener('click', function() {
+  btn.addEventListener('click', async function() {
     chartTypeButtons.forEach((b) => b.classList.remove('active'));
     btn.classList.add('active');
     currentChartType = btn.getAttribute('data-chart-type');
     sidebar.close(sidebarEl, sidebarTitleEl, sidebarListEl);
-    renderChart();
+    await renderChart();
   });
 });
 
@@ -306,6 +464,10 @@ sidebarCloseBtn.addEventListener('click', function() {
 
 document.addEventListener('click', function(e) {
   if (sidebarEl.classList.contains('empty')) return;
+  if (e.target.id === 'sidebarBackdrop' || e.target.classList.contains('sidebar-backdrop')) {
+    sidebar.close(sidebarEl, sidebarTitleEl, sidebarListEl);
+    return;
+  }
   if (!sidebarEl.contains(e.target) && !chartEl.contains(e.target)) {
     sidebar.close(sidebarEl, sidebarTitleEl, sidebarListEl);
   }
@@ -323,6 +485,10 @@ chartEl.addEventListener('mouseleave', function() {
     const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
     applyTheme(prefersDark ? 'dark' : 'light');
   }
+
+  updateApiCallCountDisplay();
+  refreshRepoSuggestions();
+  if (exampleReposEl) exampleReposEl.style.display = 'block';
 
   const urlRepo = getRepoFromUrl();
   if (urlRepo) {
